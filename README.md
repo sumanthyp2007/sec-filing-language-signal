@@ -1,91 +1,88 @@
-# Earnings-Call and Filing NLP Signal Engine
+# Do Changes in Filing Language Predict Stock Returns?
 
-Turns SEC filings, earnings releases and (your own) earnings-call transcripts into a tradable signal,
-then tests honestly whether it predicts abnormal returns.
+An end-to-end NLP event study on SEC filings. **Finding: with a word-list baseline on 30 large-cap US stocks, no statistically significant predictive signal.** The value of the project is the pipeline and the way the test was done, not a trading edge.
 
-```
-EDGAR / transcripts -> clean text -> LLM or lexicon features -> SQLite cache
-      -> QoQ change, cross-sectional z-scores, composite signal
-      -> event study (market-model CARs at 1/5/20 days)
-      -> quintile spreads, IC, clustered regression, out-of-sample test -> charts + results.md
-```
+## What it does
 
-## Status: what is and is not verified
+1. **Downloads** 10-K and 10-Q MD&A sections and 8-K earnings press releases from SEC EDGAR.
+2. **Scores** each document on six features: guidance direction, hedging, tone, and supply-chain, FX and demand-risk emphasis. Scores are cached in SQLite. A lexicon (word-list) extractor was used for the results below. An LLM extractor is also implemented but was not run.
+3. **Builds a signal** from the quarter-over-quarter change in each feature, standardised within document type and calendar quarter. The expected sign of each feature was fixed before looking at returns, so nothing in the composite is fitted to the data.
+4. **Runs an event study:** market-model abnormal returns versus SPY (estimated on days -250 to -30) over 1, 5 and 20 trading days, starting from the first tradable session after the SEC acceptance time.
+5. **Tests the signal:** long-short quintile spreads per quarter, Spearman rank information coefficient (IC), regression with errors clustered by quarter, an out-of-sample check (split 2022-01-01), and a flat 10 bps per-leg cost.
 
-- **Verified offline (10 passing tests + synthetic demo):** event-timing rules, market-model CARs,
-  QoQ differencing, quintile/IC/regression/OOS logic, LLM-response parsing, the full pipeline. On synthetic data with a
-  planted effect it recovers the effect (20d IC ~0.12, OOS holds); with effect=0 it finds nothing.
-- **Written but NOT run against live services** (the build environment had no access to sec.gov, Yahoo Finance
-  or the Anthropic API): EDGAR ingestion, yfinance download, the live LLM call. Expect to fix small things on first
-  contact (e.g. an 8-K exhibit that the filename heuristic misses). Start with `-n 5`.
-- **No real-market results are included.** `examples/synthetic_demo/` is synthetic and labelled as such.
+## Data
 
-## Setup (Python 3.10+)
+30 large-cap US stocks, filings from January 2020: 667 events from 10-K/10-Q filings and 369 from earnings releases, 1,036 in total.
+
+## Results
+
+IC = rank correlation between signal and abnormal return. LS = long-short (top minus bottom quintile) spread. OOS IC = out-of-sample IC after the split date. LS is n/a for releases because no quarter had enough events to form five groups.
+
+| Run | Horizon | Events | IC | IC t | LS gross | LS t | OOS IC |
+|---|---|---|---|---|---|---|---|
+| All filings, skip reaction day | 1d | 1,036 | -0.02 | -0.65 | -0.23% | -1.35 | -0.02 |
+| All filings, skip reaction day | 5d | 1,036 | 0.03 | 0.86 | 0.59% | 1.68 | 0.03 |
+| All filings, skip reaction day | 20d | 1,031 | 0.03 | 0.74 | 0.57% | 0.85 | -0.01 |
+| All filings, include reaction day | 1d | 1,036 | 0.00 | 0.12 | 0.30% | 0.61 | -0.02 |
+| All filings, include reaction day | 5d | 1,036 | 0.04 | 0.89 | 0.62% | 0.94 | 0.01 |
+| All filings, include reaction day | 20d | 1,031 | 0.05 | 1.35 | 1.15% | 1.59 | 0.01 |
+| Earnings releases only | 1d | 369 | -0.01 | -0.31 | n/a | n/a | 0.01 |
+| Earnings releases only | 5d | 369 | 0.02 | 0.31 | n/a | n/a | -0.01 |
+| Earnings releases only | 20d | 367 | 0.05 | 0.89 | n/a | n/a | 0.00 |
+| 10-K/10-Q only | 1d | 667 | -0.02 | -0.58 | -0.37% | -1.72 | -0.02 |
+| 10-K/10-Q only | 5d | 667 | 0.04 | 0.97 | 0.45% | 1.03 | 0.04 |
+| 10-K/10-Q only | 20d | 664 | 0.02 | 0.41 | 0.48% | 0.67 | -0.01 |
+
+**Reading it:** no t-statistic exceeds 2 in absolute value, signs flip across horizons and subsets, and out-of-sample IC is about zero. Including the reaction day roughly doubles the 20-day spread, as expected, because it adds the part of the move that cannot realistically be traded, but even that is not significant. This is a finding about this design (a crude text measure on a small sample of efficient stocks), not proof that filing language never matters.
+
+### Figures
+
+Copy the four charts from your run's `outputs` folder into a `results/` folder:
+
+![Abnormal return by quintile](results/quintile_car.png)
+![Event-time path](results/event_path.png)
+![IC by quarter](results/ic_by_period.png)
+![Feature coefficients](results/feature_coefs.png)
+
+## Validation
+
+- 12 automated tests, including event-timing rules, abnormal-return calculation, quarter-over-quarter differencing, the quintile/IC/regression logic, and LLM-response parsing.
+- An offline synthetic demo with a **planted** effect: the pipeline recovers it (20-day IC about 0.12, holds out of sample), and with the effect set to zero it finds nothing. This proves the machinery works; it says nothing about real markets.
+
+## Limitations
+
+1. **Low power.** About 1,000 events cannot detect small effects, so a small true effect is not ruled out.
+2. **Incomplete release coverage.** Earnings releases were found by a filename heuristic, and 369 is probably well below the true count. The updated code reads each filing's index page instead, but that change was tested only on a sample page, not live.
+3. **Survivorship bias.** The universe is today's large caps.
+4. **Timing.** 10-K/10-Q filings often arrive after the earnings release, so much of the news is already in the price.
+5. **Crude text measures.** Word lists ignore negation and context.
+6. **Multiple testing.** Four runs and three horizons were examined; none was significant even before any correction.
+7. **Simplified costs.** Flat 10 bps per leg; no borrow costs or capacity analysis.
+8. **No transcripts.** There is no free source for full earnings-call transcripts. The pipeline accepts files you supply.
+
+## Run it
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env     # then export the variables, or set them in your shell
-export SEC_USER_AGENT="Your Name your@email.com"     # required by the SEC
-export ANTHROPIC_API_KEY=...                         # only for --extractor llm
-python -m pytest -q tests                            # sanity check
-python -m nlp_signal.cli demo                        # offline synthetic run -> outputs/demo/
-```
+python -m pytest -q tests                      # 12 tests
+python -m nlp_signal.cli demo                  # offline synthetic run
 
-## Real run
-
-```bash
-# 1. Download 10-K/10-Q MD&A and 8-K Item 2.02 earnings releases (start small!)
-python -m nlp_signal.cli ingest -n 10 --start 2019-01-01
-
-# 2. Optional: your own transcripts as data/transcripts/AAPL_2024-02-01_1630.txt  (ET time optional)
-python -m nlp_signal.cli transcripts
-
-# 3. Features. Start with the free lexicon baseline, then the LLM; both are cached in SQLite
+set "SEC_USER_AGENT=Your Name your@email.com"  # Windows; the SEC requires this
+python -m nlp_signal.cli ingest -n 30 --start 2020-01-01
 python -m nlp_signal.cli extract --extractor lexicon
-python -m nlp_signal.cli extract --extractor llm --limit 50     # check quality/cost on a few first
-
-# 4. Analyse (conservative: skip the reaction day)
-python -m nlp_signal.cli analyze --extractor llm --offset 1 --split 2022-01-01 --cost-bps 10
+python -m nlp_signal.cli analyze --extractor lexicon --offset 1
 ```
-
-Open `notebooks/results.ipynb` for charts and tables. Fill in `docs/WRITEUP_TEMPLATE.md` from a real run.
-
-**LLM cost:** the full ~100 tickers x 2018-2025 is roughly 6,000 documents, i.e. tens of millions of input tokens.
-Use `-n`, a shorter `--start`, `--sources`, or a smaller `MAX_CHARS` while developing, and check current pricing.
-
-## Design decisions worth defending in an interview
-
-| Choice | Why |
-|---|---|
-| Signs of each feature fixed in `config.py` before seeing returns; equal-weight prior composite | No fitted weights means nothing to overfit; an OLS-fitted version is evaluated only out of sample |
-| Features differenced vs the same ticker's previous document of the *same source* | Compares like with like (10-Q to 10-Q, release to release) |
-| z-scores within (source, calendar quarter) | Removes market-wide language drift (e.g. everyone mentions FX in a strong-dollar quarter) |
-| Day 0 = first tradable session after SEC acceptance time (ET); `--offset 1` skips it | Avoids trading on information already in the price |
-| Market model estimated on [-250,-30] | Keeps the event window out of the estimation window |
-| t-stats computed across quarters; regression SEs clustered by quarter | Events in the same quarter share market shocks, so they are not independent |
-| Lexicon baseline alongside the LLM | The LLM must beat word counts to justify its cost |
-| Every LLM output cached by (document, extractor, prompt version) | Reproducible, resumable, cheap to re-analyse |
-
-## Known limitations (also list these in your write-up)
-
-1. **Survivorship bias:** the default universe is today's large caps.
-2. **LLM look-ahead / memorisation:** a model may have seen these filings *and* the subsequent price moves in training.
-   The prompt forbids outside knowledge but cannot guarantee it. Test periods after the model's training cutoff.
-3. **Timing of 10-K/10-Q:** they often arrive days to weeks after the earnings release, so the "event" is not the
-   earnings surprise. Releases (8-K 2.02) and transcripts are the cleaner event; compare with `--sources`.
-4. **Transcripts:** no free, complete source exists; bring your own licensed text.
-5. **8-K exhibit finding is a filename heuristic** (`ex99*.htm`), best effort.
-6. **Multiple testing:** 3 horizons x 6 features x several sources. Report how many you looked at.
-7. **Costs:** a flat bps assumption; no borrow cost or capacity analysis.
-8. MD&A extraction is regex-based and can fail on unusual filings (it falls back to the full text).
+Other useful options: `--sources release` or `periodic`, `--offset 0`, `--cost-bps`, `--out folder`, and `extract --extractor llm --dry-run` to estimate LLM cost before spending anything.
 
 ## Layout
 
 ```
-nlp_signal/  config, db, universe, edgar, textproc, extract, prices, signals,
-             event_study, analysis, report, pipeline, demo, cli
-tests/       offline unit + end-to-end tests
-notebooks/   results.ipynb
-docs/        WRITEUP_TEMPLATE.md
-examples/    synthetic_demo/  (synthetic, for pipeline validation only)
+nlp_signal/   edgar, textproc, extract, signals, event_study, analysis, report, pipeline, cli
+tests/        unit and end-to-end tests
+notebooks/    results.ipynb
+docs/         write-up
 ```
+
+## Next steps
+
+Verify release coverage with the `coverage` command, scale to about 100 companies, run the LLM extractor on earnings releases and test whether it beats the word-list baseline, and add licensed transcripts.
